@@ -120,6 +120,7 @@ struct usb_request {
 
 	int			status;
 	unsigned		actual;
+	unsigned		unlinked;
 };
 
 /*-------------------------------------------------------------------------*/

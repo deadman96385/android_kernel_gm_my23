@@ -30,7 +30,7 @@
 #define DRIVER_DABRIDGE_H_
 
 #define H2H_DRIVER_DESC    "Delphi H2H Bridge driver with Gadget/UDC Interface"
-#define H2H_DRIVER_VERSION "18.05.14"
+#define H2H_DRIVER_VERSION "20.08.10"
 
 #define USB_DELPHI_VENDOR_ID     0x2C48
 #define USB_UNWIRED_VENDOR_ID    0x2996

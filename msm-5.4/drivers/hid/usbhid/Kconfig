@@ -45,6 +45,14 @@ config USB_HIDDEV
 
 	  If unsure, say Y.
 
+config USB_HIDDEV_REG
+	bool "Register HID devices to USB subsystem"
+	default y
+	help
+	 Say N here if you do not want to register hid devices to USB
+	 subsystem.For example, Disable usbhid devices without setting
+	 USB_HID=n
+
 menu "USB HID Boot Protocol drivers"
 	depends on USB!=n && USB_HID!=y && EXPERT
 

@@ -31,6 +31,17 @@
  *                              could lead to "double free". Remove USB request from
  *                              endpoint queue if the URB request submission fails.
  *
+ *  Sam Yeda        24OCT2018,  Prevent double unlinking of URBs in certain gadget
+ *                              configuration during gadget driver unloading or shutdown.
+ *  Sam Yeda        29OCT2018,  Unhalt control endpoint before start of new bridge
+ *                              session.
+ *  Sam Yeda        05NOV2018,  Use synchronous URB unlinking when dequeuing requests.
+ *  Sam Yeda        10NOV2018,  Use synchronous URB unlinking when disabling endpoints.
+ *  Sam Yeda        30APR2019,  Use asynchronous URB unlinking whenever in atomic
+ *                              context to prevent "BUG: scheduling while atomic".
+ *  Sam Yeda        14SEP2019,  Kernel version >= 5.0 replace deprecated do_gettimeofday.
+ *  Sam Yeda        10AUG2020,  Use 64bit division helper when compiling on 32bit.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -50,6 +61,7 @@
 #include <linux/usb/gadget.h>
 #include <linux/workqueue.h>
 #include <linux/platform_device.h>
+#include <linux/dma-mapping.h>
 
 #include "dabridge.h"
 
@@ -94,6 +106,67 @@ int dabridge_udc_endpoint_transfers(struct dabridge_usb *brdev, int is_start);
 static int transfer_state = STOP_UDC_XFER;
 /*-------------------------------------------------------------------------*/
 
+static int dabr_usb_buffer_map(struct urb *urb) {
+	struct usb_bus		*bus;
+	struct device		*controller;
+
+	if (!urb || !urb->dev || !(bus = urb->dev->bus)
+		|| !(controller = bus->sysdev))
+		return -EINVAL;
+
+	if (controller->dma_mask) {
+		urb->transfer_dma = dma_map_single(controller,
+			urb->transfer_buffer, urb->transfer_buffer_length,
+			usb_pipein(urb->pipe)
+			? DMA_FROM_DEVICE : DMA_TO_DEVICE);
+	} else
+		urb->transfer_dma = ~0;
+	urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+	return 0;
+}
+
+static void dabr_usb_buffer_unmap(struct urb *urb) {
+	struct usb_bus		*bus;
+	struct device		*controller;
+
+	if (!urb || !(urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP)
+		|| !urb->dev || !(bus = urb->dev->bus)
+		|| !(controller = bus->sysdev))
+		return;
+
+	if (controller->dma_mask) {
+		dma_unmap_single(controller,
+			urb->transfer_dma, urb->transfer_buffer_length,
+			usb_pipein(urb->pipe)
+			? DMA_FROM_DEVICE : DMA_TO_DEVICE);
+	}
+	urb->transfer_flags &= ~URB_NO_TRANSFER_DMA_MAP;
+}
+
+static void dabr_usb_buffer_dmasync(struct urb *urb)
+{
+	struct usb_bus		*bus;
+	struct device		*controller;
+
+	if (!urb || !(urb->transfer_flags & URB_NO_TRANSFER_DMA_MAP)
+		|| !urb->dev || !(bus = urb->dev->bus)
+		|| !(controller = bus->sysdev))
+		return;
+
+	if (controller->dma_mask) {
+		dma_sync_single_for_cpu(controller,
+			urb->transfer_dma, urb->transfer_buffer_length,
+			usb_pipein(urb->pipe)
+			? DMA_FROM_DEVICE : DMA_TO_DEVICE);
+
+		if (usb_pipecontrol(urb->pipe))
+			dma_sync_single_for_cpu(controller,
+					urb->setup_dma,
+					sizeof(struct usb_ctrlrequest),
+					DMA_TO_DEVICE);
+        }
+}
+
 static void dabr_abort_pending_urb(struct dabridge_udc *cntroller, struct dabr_g_ep *ep)
 {
 	if (unlikely(in_atomic())) {
@@ -101,6 +174,15 @@ static void dabr_abort_pending_urb(struct dabridge_udc *cntroller, struct dabr_g
 		dev_warn (udc_dev(cntroller), "asynchronous unlink %s\n", ep->ep.name);
 	} else {
 		usb_kill_anchored_urbs(&ep->submitted);
+	}
+}
+
+static void dabr_abort_urb(struct urb * urb)
+{
+	if (unlikely(in_atomic())) {
+		usb_unlink_urb(urb);
+	} else {
+		usb_kill_urb(urb);
 	}
 }
 
@@ -154,6 +236,8 @@ static void dabr_nuke(struct dabridge_udc *cntroller,
 		req->count--;
 		req->req.status = -ESHUTDOWN;
 		spin_unlock(&ep->lock);
+		dabr_usb_buffer_dmasync(req->urb);
+		dabr_usb_buffer_unmap(req->urb);
 		req->req.complete(&ep->ep, &req->req);
 		spin_lock(&ep->lock);
 		//dev_info (udc_dev(cntroller), "%s nuke req=%p\n", ep->ep.name, &req->req);
@@ -471,7 +555,12 @@ static int dabr_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 		}
 	}
 
+	dabr_usb_buffer_dmasync(req->urb);
+	dabr_usb_buffer_unmap(req->urb);
+
 	if (ep != &cntroller->eps[0]) {
+		if (_req->unlinked)
+			req->urb->error_count = 0xff;
 		usb_unanchor_urb(req->urb);
 		usb_unlink_urb(req->urb);
 	}
@@ -482,6 +571,8 @@ static int dabr_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 			req, _ep->name, _req->length, _req->buf);
 		req->count--;
 		spin_unlock(&ep->lock);
+		if(ep != &cntroller->eps[0])
+			dabr_abort_urb(req->urb);
 		_req->complete (_ep, _req);
 		spin_lock(&ep->lock);
 	}
@@ -1272,6 +1363,8 @@ static void dabr_urb_handler(struct dabridge_udc *cntroller,
 		dev_dbg(udc_dev(cntroller),
 				"%s unlinked %d, urb %p status %d\n",
 				ep->ep.name, urb->unlinked, urb, urb->status);
+		if (urb->error_count == 0xff)
+			kfree(urb->transfer_buffer);
 		goto exit_handler;
 	}
 
@@ -1282,6 +1375,10 @@ static void dabr_urb_handler(struct dabridge_udc *cntroller,
 		/* TODO: Remove from queue */
 		goto exit_handler;
 	}
+
+	// Transfer completed release the DMA mapping ASAP
+	dabr_usb_buffer_dmasync(urb);
+	dabr_usb_buffer_unmap(urb);
 
 	if (ep == &cntroller->eps[0] && usb_pipein(urb->pipe)
 			&& cntroller->ctrl_state != DABR_CTRL_DATA_OUT) {
@@ -1510,10 +1607,15 @@ static int dabr_epX_rw(struct dabridge_udc *cntroller,
 		goto err;
 	}
 
+	if(dabr_usb_buffer_map(dareq->urb))
+		dev_warn(udc_dev(cntroller),"DMA mapping failed");
+
+
 	if (dareq->urb->hcpriv)
 		goto err;
 
 	dareq->count++;
+
 	/* Track submitted URB's */
 	usb_anchor_urb(dareq->urb, &ep->submitted);
 
@@ -1521,6 +1623,7 @@ static int dabr_epX_rw(struct dabridge_udc *cntroller,
 	rv = usb_submit_urb(dareq->urb, dareq->mem_flags);
 
 	if (unlikely(rv < 0)) {
+		dabr_usb_buffer_unmap(dareq->urb);
 		usb_unanchor_urb(dareq->urb);
 		ERR_USB(cntroller->bridgedev,
 				"failed submitting ep%d_%s urb, error %d",
@@ -1566,6 +1669,8 @@ static int dabr_ep0_rw(struct dabridge_udc *cntroller, bool isRead,
 				     cntroller);
 	}
 
+	if(dabr_usb_buffer_map(dareq->urb))
+		dev_warn(udc_dev(cntroller),"DMA mapping failed");
 
 	/* Track submitted URB's */
 	usb_anchor_urb(dareq->urb, &cntroller->eps[0].submitted);
@@ -1574,6 +1679,7 @@ static int dabr_ep0_rw(struct dabridge_udc *cntroller, bool isRead,
 	rv = usb_submit_urb(dareq->urb, GFP_ATOMIC);
 
 	if (rv < 0) {
+		dabr_usb_buffer_unmap(dareq->urb);
 		usb_unanchor_urb(dareq->urb);
 		ERR_USB(dev, "failed submitting control urb, error %d", rv);
 		rv = (rv == -ENOMEM) ? rv : -EIO;

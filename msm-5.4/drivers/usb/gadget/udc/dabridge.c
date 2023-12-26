@@ -25,6 +25,9 @@
  *                              drop and add endpoint which in turn resets the endpoints.
  *  Sam Yeda        14May2018,  Replace DRIVER_ATTR with DRIVER_ATTR_RW to allow
  *                              compatibility with newer Kernel version(s).
+ *  Sam Yeda        30JUN2018,  Fix warning: "transfer buffer is on stack" for kernel >= 4.9
+ *  Sam Yeda        15DEC2018,  Fix printed version number format.
+ *  Sam Yeda        15DEC2018,  Use new API for PIVI HILN HUB.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -139,6 +142,15 @@ static const struct dabridge_info hiln_104_info = {
 	.port_switch_wait = 1,
 	.new_apis = 0,
 };
+static const struct dabridge_info hiln_104_pivi_info = {
+	.ep_names = (const char **)dabridge_ep_name_full_isoc,
+	.num_of_ep_names = ARRAY_SIZE(dabridge_ep_name_full_isoc),
+	.isoc_in_ep = 0,
+	.isoc_out_ep = 0,
+	.port_num_offset = 0,
+	.port_switch_wait = 100,
+	.new_apis = 1,
+};
 static const struct dabridge_info asic_105_info = {
 	.ep_names = (const char **)dabridge_ep_name_no_isoc,
 	.num_of_ep_names = ARRAY_SIZE(dabridge_ep_name_no_isoc),
@@ -157,9 +169,10 @@ static const struct usb_device_id dabridge_usb_table[] = {
 		.driver_info = (unsigned long)&asic_101_info, },
 	{ USB_DEVICE(USB_UNWIRED_VENDOR_ID, USB_ASIC_102_PRODUCT_ID),
 		.driver_info = (unsigned long)&asic_102_info, },
-
+	{ USB_DEVICE_VER(USB_UNWIRED_VENDOR_ID, USB_HILN_104_PRODUCT_ID, 0x1700, 0x9900),
+		.driver_info = (unsigned long)&hiln_104_pivi_info, }, /* *MUST* be above legacy */
 	{ USB_DEVICE(USB_UNWIRED_VENDOR_ID, USB_HILN_104_PRODUCT_ID),
-		.driver_info = (unsigned long)&hiln_104_info, },
+		.driver_info = (unsigned long)&hiln_104_info, },      /* Legacy */
 	{ USB_DEVICE(USB_UNWIRED_VENDOR_ID, USB_ASIC_105_PRODUCT_ID),
 		.driver_info = (unsigned long)&asic_105_info, },
 	{ USB_DEVICE(USB_DELPHI_VENDOR_ID,  USB_ASIC_105_PRODUCT_ID),
@@ -302,12 +315,8 @@ static void dabridge_print_hub_info(struct dabridge_usb *dev)
 static int dabridge_print_version(struct dabridge_usb *dev)
 {
 	int rv;
-	u8 *buf;
+	u8 *buf = kmalloc(8, GFP_KERNEL);
 	struct usb_ctrlrequest request;
-
-	buf = kzalloc(sizeof(*buf) * 5, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
 
 	request.bRequestType = VEND_RD_BMREQTYPE;
 	request.bRequest = VEND_RD_BREQ;
@@ -317,16 +326,18 @@ static int dabridge_print_version(struct dabridge_usb *dev)
 	request.wLength = cpu_to_le16(2);
 	if ((rv = dabridge_blocking_ctrl_rw(dev, CTRL_READ, &request, &buf[0])) < 0) {
 		ERR_USB(dev, "Unable to read hardware revision\n");
-		goto error;
+		kfree(buf);
+		return rv;
 	}
 	request.wIndex = cpu_to_le16(WINDEX_I_FIRMWARE_VERSION);
 	request.wLength = cpu_to_le16(3);
 	if ((rv = dabridge_blocking_ctrl_rw(dev, CTRL_READ, &request, &buf[2])) < 0) {
 		ERR_USB(dev, "Unable to read firmware revision\n");
-		goto error;
+		kfree(buf);
+		return rv;
 	}
 	INFO_USB(dev,
-		"P(%04x) D(%s) F(%hhd.%hhd.%hhd) H(%hhd.%hhd) %s\n",
+		"P(%04x) D(%s) F(%hhu.%hhu.%hhu) H(%hhu.%hhu) %s\n",
 		dev->usbdev->descriptor.idProduct,
 		H2H_DRIVER_VERSION,
 		buf[4],
@@ -336,9 +347,8 @@ static int dabridge_print_version(struct dabridge_usb *dev)
 		buf[0],
 		usb_speed_string(dev->usbdev->speed));
 	dabridge_print_hub_info(dev);
-error:
 	kfree(buf);
-	return rv;
+	return 0;
 }
 
 static void dabridge_usb_reset_eps(struct dabridge_usb *dev)

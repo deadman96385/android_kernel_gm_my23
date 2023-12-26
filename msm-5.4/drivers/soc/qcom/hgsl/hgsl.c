@@ -2246,13 +2246,9 @@ static int hgsl_ioctl_issueib_with_alloc_list(struct file *filep,
 		} else if (ret == -EPERM)
 			remote_issueib = true;
 	}
-	if (remote_issueib) {
+	if (remote_issueib)
 		ret = hgsl_hyp_issueib_with_alloc_list(&priv->hyp_priv,
 			&params, ibs, allocations, be_descs, be_offsets);
-		if (ret || params.rval)
-			LOGE("hgsl_hyp_issueib_with_alloc_list failed ctx %d, ts %d, ret %d, rval %d, id %d",
-			params.ctxthandle, params.timestamp, ret, params.rval, params.channel_id);
-	}
 
 	if (copy_to_user(USRPTR(arg), &params, sizeof(params))) {
 		LOGE("failed to copy param to user");
@@ -2939,7 +2935,6 @@ static int hgsl_ioctl_hsync_fence_create(struct file *filep,
 		goto out;
 	}
 	copy_to_user(USRPTR(arg), &param, sizeof(param));
-
 out:
 	hgsl_put_context(ctxt);
 
@@ -3180,6 +3175,10 @@ static int qcom_hgsl_register(struct platform_device *pdev,
 		dev_err(&pdev->dev, "cdev_add failed %d\n", ret);
 		goto exit_destroy_device;
 	}
+
+	ret = dma_coerce_mask_and_coherent(hgsl_dev->dev, DMA_BIT_MASK(64));
+	if (ret)
+		LOGW("Failed to set dma mask to 64 bits, ret = %d", ret);
 
 	return 0;
 

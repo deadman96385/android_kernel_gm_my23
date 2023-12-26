@@ -2,7 +2,8 @@
 /*
  * virtio block crypto ops QTI implementation.
  *
- * Copyright (c) 2021, Linux Foundation. All rights reserved.
+ * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/device.h>
@@ -127,7 +128,7 @@ int virtblk_init_crypto_qti_spec(void)
 	memset(crypto_modes_supported, 0, sizeof(crypto_modes_supported));
 
 	/* Actual determination of capabilities for UFS/EMMC for different
-	 * encryption modes are done in the back end (another operating system)
+	 * encryption modes are done in the back end (host operating system)
 	 * in case of virtualization driver, so will get crypto capabilities
 	 * from the back end. The received capabilities is feeded as input
 	 * parameter to keyslot manager

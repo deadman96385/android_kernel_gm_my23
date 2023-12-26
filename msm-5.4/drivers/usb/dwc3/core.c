@@ -1164,14 +1164,26 @@ int dwc3_core_init(struct dwc3 *dwc)
 		dwc3_writel(dwc->regs, DWC3_GUCTL1, reg);
 	}
 
+	/* Force Gen1 speed on Gen2 controller if "force_gen1" is present */
+	if (dwc->force_gen1) {
+		reg = dwc3_readl(dwc->regs, DWC3_LLUCTL(0));
+		reg |= DWC3_FORCE_GEN1;
+		dwc3_writel(dwc->regs, DWC3_LLUCTL(0), reg);
+	}
+
 	/*
 	 * STAR 9001346572: Host: When a Single USB 2.0 Endpoint Receives NAKs Continuously, Host
-	 * Stops Transfers to Other Endpoints. The endpoint to be serviced has to choose this
-	 * endpoint stuck with NAKs to be evicted from the EP cache.
+	 * Stops Transfers to Other Endpoints. When an active endpoint that is not currently cached
+	 * in the host controller is chosen to be cached to the same cache index as the endpoint
+	 * that receives NAK, The endpoint that receives the NAK responses would be in continuous
+	 * retry mode that would prevent it from getting evicted out of the host controller cache.
+	 * This would prevent the new endpoint to get into the endpoint cache and therefore service
+	 * to this endpoint is not done.
 	 * The workaround is to disable lower layer LSP retrying the USB2.0 NAKed transfer. Forcing
-	 * this to LSP upper layer allows next endpoint to evict the stuck endpoint from cache.
+	 * this to LSP upper layer allows next EP to evict the stuck EP from cache.
 	 */
-	if (dwc->revision >= DWC3_USB31_REVISION_170A) {
+	if ((dwc->revision == DWC3_USB31_REVISION_170A) &&
+		(dwc->version_type == DWC31_VERSIONTYPE_GA)) {
 		reg = dwc3_readl(dwc->regs, DWC3_GUCTL3);
 		reg |= DWC3_GUCTL3_USB20_RETRY_DISABLE;
 		dwc3_writel(dwc->regs, DWC3_GUCTL3, reg);
@@ -1537,6 +1549,8 @@ static void dwc3_get_properties(struct dwc3 *dwc)
 	dwc->dis_split_quirk = device_property_read_bool(dev,
 				"snps,dis-split-quirk");
 
+	dwc->force_gen1 = device_property_read_bool(dev, "snps,force-gen1");
+
 	dwc->lpm_nyet_threshold = lpm_nyet_threshold;
 	dwc->tx_de_emphasis = tx_de_emphasis;
 
@@ -1807,8 +1821,9 @@ static int dwc3_remove(struct platform_device *pdev)
 {
 	struct dwc3	*dwc = platform_get_drvdata(pdev);
 
-	dwc3_debugfs_exit(dwc);
 	dwc3_gadget_exit(dwc);
+	dwc3_debugfs_exit(dwc);
+
 	pm_runtime_disable(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
@@ -1953,7 +1968,7 @@ static int dwc3_resume_common(struct dwc3 *dwc, pm_message_t msg)
 		if (PMSG_IS_AUTO(msg))
 			break;
 
-		ret = dwc3_core_init(dwc);
+		ret = dwc3_core_init_for_resume(dwc);
 		if (ret)
 			return ret;
 

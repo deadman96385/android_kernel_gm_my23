@@ -2,7 +2,8 @@
 /*
  * Crypto virtual library for storage encryption.
  *
- * Copyright (c) 2021, Linux Foundation. All rights reserved.
+ * Copyright (c) 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -18,22 +19,18 @@
 /** global definitions		 **/
 /**********************************/
 
-#define RESERVE_SIZE           (36*sizeof(uint16_t))
-/* This macro is aligned to actual definition present
- * in bio crypt context header file.
- */
-#define BLK_CRYPTO_MAX_WRAPPED_KEY_SIZE	128
-#define SECRET_SIZE 32
+#define	RESERVE_SIZE                    (36*sizeof(uint16_t))
+#define	SECRET_SIZE                     (32)
 
-#define HAB_TIMEOUT_MS	(50000)
+#define	HAB_TIMEOUT_MS                  (50000)
 
 /* FBE request command ids */
-#define	FBE_GET_MAX_SLOTS            (7)
-#define	FBE_SET_KEY_V2               (8)
-#define	FBE_CLEAR_KEY_V2             (9)
-#define	FBE_DERIVE_RAW_SECRET        (10)
-#define	FBE_GET_CRYPTO_CAPABILITIES  (11)
-#define	FBE_VERIFY_CRYPTO_CAPS       (12)
+#define	FBE_GET_MAX_SLOTS               (7)
+#define	FBE_SET_KEY_V2                  (8)
+#define	FBE_CLEAR_KEY_V2                (9)
+#define	FBE_DERIVE_RAW_SECRET           (10)
+#define	FBE_GET_CRYPTO_CAPABILITIES     (11)
+#define	FBE_VERIFY_CRYPTO_CAPS          (12)
 
 struct fbe_derive_secret {
 	uint8_t wrapped_key[BLK_CRYPTO_MAX_WRAPPED_KEY_SIZE];
@@ -70,7 +67,6 @@ static int32_t send_fbe_req_hab(void *arg)
 	int ret = 0;
 	uint32_t status_size;
 	uint32_t handle;
-	struct fbe_v2_resp response;
 	struct fbe_req_args *req_args = (struct fbe_req_args *)arg;
 
 	do {
@@ -93,7 +89,7 @@ static int32_t send_fbe_req_hab(void *arg)
 		}
 
 		do {
-			status_size = sizeof(response);
+			status_size = sizeof(struct fbe_v2_resp);
 			ret = habmm_socket_recv(handle, &req_args->response, &status_size, 0,
 						HABMM_SOCKET_RECV_FLAGS_UNINTERRUPTIBLE);
 		} while (-EINTR == ret);
@@ -102,9 +98,9 @@ static int32_t send_fbe_req_hab(void *arg)
 			pr_err("habmm_socket_recv failed, ret= 0x%x\n", ret);
 			break;
 		}
-		if (status_size != sizeof(response)) {
+		if (status_size != sizeof(struct fbe_v2_resp)) {
 			pr_err("habmm_socket_recv expected size: %lu, actual=%u\n",
-			       sizeof(response),
+			       sizeof(struct fbe_v2_resp),
 			       status_size);
 			ret = -E2BIG;
 			break;
@@ -207,8 +203,8 @@ int crypto_qti_virt_program_key(const struct blk_crypto_key *key,
 	}
 
 	/* Actual determination of capabilities for UFS/EMMC for different
-	 * encryption modes are done in the back end (another operating system)
-	 * in case of virtualization driver, so will send details to back end
+	 * encryption modes are done in the back end (host operating system)
+	 * in case of virtualization driver, so will send details to backend
 	 * and BE will verify the given capabilities.
 	 */
 	ret = verify_crypto_capabilities(key->crypto_mode,  key->data_unit_size);

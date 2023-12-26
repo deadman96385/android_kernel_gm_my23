@@ -90,22 +90,6 @@ struct virtio_snd_desc {
 };
 
 /*******************************************************************************
- * BASE FUNCTION DEFINITIONS
- */
-
-/* a maximum possible configuration data size (in bytes) */
-#define VIRTIO_SND_BASE_CFG_MAX_SIZE	1024
-
-/* a response containing device configuration */
-struct virtio_snd_base_configuration {
-	struct virtio_snd_hdr hdr;
-	/* size in bytes of configuration data */
-	__virtio32 length;
-	/* configuration data */
-	__u8 data[VIRTIO_SND_BASE_CFG_MAX_SIZE];
-};
-
-/*******************************************************************************
  * PCM FUNCTION DEFINITIONS
  */
 
@@ -403,6 +387,26 @@ struct virtio_snd_pcm_status {
 	__virtio32 status;
 	/* amount of bytes actually read from/written to a data buffer */
 	__virtio32 length;
+};
+
+/*******************************************************************************
+ * BASE FUNCTION DEFINITIONS
+ */
+
+#define VIRTIO_SND_MAX_DEVICES 16
+
+/* a maximum possible configuration data size (in bytes) */
+#define VIRTIO_SND_BASE_CFG_MAX_SIZE    ( VIRTIO_SND_MAX_DEVICES * (                \
+                                        sizeof (struct virtio_snd_pcm_desc) +       \
+                                        sizeof (struct virtio_snd_pcm_stream_desc)))
+
+/* a response containing device configuration */
+struct virtio_snd_base_configuration {
+	struct virtio_snd_hdr hdr;
+	/* size in bytes of configuration data */
+	__virtio32 length;
+	/* configuration data */
+	__u8 data[VIRTIO_SND_BASE_CFG_MAX_SIZE];
 };
 
 #endif /* VIRTIO_SND_IF_H */

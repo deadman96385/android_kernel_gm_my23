@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
 
@@ -169,6 +170,16 @@ static int hab_receive_create_export_ack(struct physical_channel *pchan,
 		return -EINVAL;
 	}
 
+	/*
+	 * If the hab version on remote side is different with local side,
+	 * the size of the ack structure may differ. Under this circumstance,
+	 * the sizebytes is still trusted. Thus, we need to read it out and
+	 * drop the mismatched ack message from channel.
+	 * Dropping such message could avoid the [payload][header][payload]
+	 * data layout which will make the whole channel unusable.
+	 * But for security reason, we cannot perform it when sizebytes is
+	 * larger than expected.
+	 */
 	if (physical_channel_read(pchan,
 		&ack_recvd->ack,
 		sizebytes) != sizebytes) {
@@ -176,27 +187,33 @@ static int hab_receive_create_export_ack(struct physical_channel *pchan,
 		return -EIO;
 	}
 
-	hab_spin_lock(&ctx->expq_lock, irqs_disabled);
-	list_add_tail(&ack_recvd->node, &ctx->exp_rxq);
-	hab_spin_unlock(&ctx->expq_lock, irqs_disabled);
+	/* add ack_recvd node into rx queue only if the sizebytes is expected */
+	if (sizeof(ack_recvd->ack) == sizebytes) {
+		hab_spin_lock(&ctx->expq_lock, irqs_disabled);
+		list_add_tail(&ack_recvd->node, &ctx->exp_rxq);
+		hab_spin_unlock(&ctx->expq_lock, irqs_disabled);
+	} else {
+		kfree(ack_recvd);
+		return -EINVAL;
+	}
 
 	return 0;
 }
-static uint8_t drop_buff[50*1024];
+static uint8_t drop_buff[8*1024];
 static void hab_msg_drop(struct physical_channel *pchan, size_t sizebytes)
 {
 	uint8_t *data = drop_buff;
 	long drop_size = 0;
 	long size_remain = sizebytes;
-	
+
 	if (sizebytes > HAB_HEADER_SIZE_MASK) {
 		pr_err("%s read size too large %zd\n", pchan->name, sizebytes);
 		return;
 	}
 
 	do {
-		if (size_remain > sizeof (drop_buff))
-			drop_size = sizeof (drop_buff);
+		if (size_remain > sizeof(drop_buff))
+			drop_size = sizeof(drop_buff);
 		else
 			drop_size = size_remain;
 
@@ -289,9 +306,10 @@ int hab_msg_recv(struct physical_channel *pchan,
 	case HAB_PAYLOAD_TYPE_SCHE_RESULT_RSP:
 		message = hab_msg_alloc(pchan, sizebytes);
 		if (!message) {
-			pr_err("%s drop msg due to alloc %zu bytes failure\n",
+			pr_err("%s alloc %zu failed msg is lost\n",
 				pchan->name, sizebytes);
 			hab_msg_drop(pchan, sizebytes);
+			ret = -ENOMEM;
 			break;
 		}
 
@@ -324,18 +342,21 @@ int hab_msg_recv(struct physical_channel *pchan,
 		if (sizebytes > HAB_HEADER_SIZE_MASK) {
 			pr_err("%s exp size too large %zd header %zd\n",
 				pchan->name, sizebytes, sizeof(*exp_desc));
+			ret = -EINVAL;
 			break;
 		}
-			
-		pr_debug("%s exp payload %zu bytes\n",
-				pchan->name, sizebytes);
 
 		pr_debug("%s exp payload %zu bytes\n",
 				pchan->name, sizebytes);
 
 		exp_desc = kzalloc(sizebytes, GFP_ATOMIC);
-		if (!exp_desc)
+		if (!exp_desc) {
+			pr_err("%s alloc %zu failed exp is lost\n",
+				pchan->name, sizebytes);
+			hab_msg_drop(pchan, sizebytes);
+			ret = -ENOMEM;
 			break;
+		}
 
 		if (physical_channel_read(pchan, exp_desc, sizebytes) !=
 			sizebytes) {
@@ -343,6 +364,7 @@ int hab_msg_recv(struct physical_channel *pchan,
 				pchan->name, sizebytes, vchan->id,
 				vchan->otherend_id, vchan->session_id);
 			kfree(exp_desc);
+			ret = -EPIPE;
 			break;
 		}
 
@@ -383,9 +405,10 @@ int hab_msg_recv(struct physical_channel *pchan,
 		/* pull down the incoming data */
 		message = hab_msg_alloc(pchan, sizebytes);
 		if (!message) {
-			pr_err("%s failed to allocate msg prof msg will be lost\n",
-					pchan->name);
+			pr_err("%s alloc %zu failed prof msg is lost\n",
+				pchan->name, sizebytes);
 			hab_msg_drop(pchan, sizebytes);
+			ret = -ENOMEM;
 		}
 		else {
 			struct habmm_xing_vm_stat *pstat =
@@ -402,9 +425,10 @@ int hab_msg_recv(struct physical_channel *pchan,
 		/* pull down the incoming data */
 		message = hab_msg_alloc(pchan, sizebytes);
 		if (!message) {
-			pr_err("%s failed to allocate msg sche msg will be lost\n",
-					pchan->name);
+			pr_err("%s alloc %zu failed sche msg is lost\n",
+				pchan->name, sizebytes);
 			hab_msg_drop(pchan, sizebytes);
+			ret = -ENOMEM;
 		}
 		else {
 			((unsigned long long *)message->data)[0] = rx_mpm_tv;
@@ -416,6 +440,7 @@ int hab_msg_recv(struct physical_channel *pchan,
 		pr_err("%s unknown msg received, payload type %d, vchan id %x, sizebytes %zx, session %d\n",
 			pchan->name, payload_type, vchan_id,
 			sizebytes, session_id);
+			ret = -EOPNOTSUPP;
 		break;
 	}
 	if (vchan)

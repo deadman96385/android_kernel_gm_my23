@@ -245,7 +245,7 @@ static const struct file_operations profiler_fops = {
 	.open = profiler_open,
 	.unlocked_ioctl = profiler_ioctl,
 #ifdef CONFIG_COMPAT
-	.compat_ioctl = profiler_ioctl,
+	 .compat_ioctl = profiler_ioctl,
 #endif
 	.release = profiler_release
 };

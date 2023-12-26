@@ -30,7 +30,10 @@
  * Will discard this macro once uapi chages are mainlined
  */
 #define VIRTIO_BLK_F_ICE	23	/* support ice virtualization */
-#define VIRTIO_BLK_F_ICE_IV	22	/* support ice virtualization with iv*/
+/* support ice virtualization with
+ * iv (initialization vector)
+ */
+#define VIRTIO_BLK_F_ICE_IV	22
 #endif
 
 static int major;
@@ -1127,6 +1130,8 @@ static int virtblk_freeze(struct virtio_device *vdev)
 	blk_mq_quiesce_queue(vblk->disk->queue);
 
 	vdev->config->del_vqs(vdev);
+	kfree(vblk->vqs);
+
 	return 0;
 }
 
